@@ -1,65 +1,38 @@
-mod resource_record;
-
 use std::net;
-use std::net::IpAddr;
-use resource_record::{Type, Class};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::str::FromStr;
 
-enum Opcode {
-    StandardQuery,
-    StatusQuery
-}
+use ip::IpAddressType;
+use transport::SocketType;
 
-enum ResponseCode {
-    NoError = 0,
-    FormatError = 1,
-    ServerError = 2,
-    NameError = 3,
-    NotImplementedError = 4,
-    RefusedError = 5
-}
+use crate::dns::{DNSMessage, Hostname};
 
+mod ip;
+mod transport;
+mod dns;
+mod udp;
 
-struct Header {
-    id: u16,
-    qr: bool,
-    opcode: Opcode,
-    authoritative: bool,
-    truncation: bool,
-    recursion_desired: bool,
-    recursion_available: bool,
-    response_code: ResponseCode,
-    qdcount: u16,
-    ancount: u16,
-    nscount: u16,
-    arcount: u16
-}
-
-struct Question {
-    qname: String,
-    qtype: Type,
-    qclass: Class
-}
-
-struct Answer;
-struct Authority;
-struct Additional;
-
-struct DNSMessage {
-    header: Header,
-    question: Question,
-    answer: Option<Answer>,
-    authority: Option<Authority>,
-    additional: Option<Additional>
-}
+const DEFAULT_NAME_SERVER: &str = "8.8.8.8";
 
 fn get_ip_addresses(
-    domain_name: &str,
-    family: IpAddr,
+    hostname: Hostname,
+    family: IpAddressType,
+    socket_type: SocketType
     ) -> Vec<net::Ipv4Addr> {
+    let socket_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+    let dns_server_socket_addr = SocketAddrV4::new(Ipv4Addr::from_str(DEFAULT_NAME_SERVER).unwrap(), 53);
+    let udp_socket = UdpSocket::bind(socket_addr).expect("Could not bind to address");
+    udp_socket.connect(dns_server_socket_addr).expect(format!("Couldn't connect to {:?}", dns_server_socket_addr).as_str());
+
+    let query = DNSMessage::new_query_from_hostname(hostname);
+    udp_socket.send(); // TODO
+
+
+
     Vec::new()
 }
 
 
 fn main() {
-
+    get_ip_addresses(Hostname::from_string("hola.com"), IpAddressType::V4, SocketType::UDP);
 }
