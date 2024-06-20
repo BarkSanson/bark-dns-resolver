@@ -5,17 +5,20 @@ use std::str::FromStr;
 use ip::IpAddressType;
 use transport::SocketType;
 
-use crate::dns::{DNSMessage, Hostname};
+use crate::dns::{DNSMessage, DomainName};
+use crate::serialize::Serialize;
 
 mod ip;
 mod transport;
 mod dns;
-mod udp;
+mod request;
+mod serialize;
+mod parser;
 
 const DEFAULT_NAME_SERVER: &str = "8.8.8.8";
 
 fn get_ip_addresses(
-    hostname: Hostname,
+    hostname: DomainName,
     family: IpAddressType,
     socket_type: SocketType
     ) -> Vec<net::Ipv4Addr> {
@@ -25,14 +28,17 @@ fn get_ip_addresses(
     udp_socket.connect(dns_server_socket_addr).expect(format!("Couldn't connect to {:?}", dns_server_socket_addr).as_str());
 
     let query = DNSMessage::new_query_from_hostname(hostname);
-    udp_socket.send(); // TODO
+    let b = query.as_bytes();
+    let r = udp_socket.send(b.as_slice());
 
+    let buf = &mut [0u8; 1024];
 
+    let (amt, _src) = udp_socket.recv_from(buf).expect("Didn't receive data");
 
     Vec::new()
 }
 
 
 fn main() {
-    get_ip_addresses(Hostname::from_string("hola.com"), IpAddressType::V4, SocketType::UDP);
+    get_ip_addresses(DomainName::from_string("hola.com"), IpAddressType::V4, SocketType::UDP);
 }
