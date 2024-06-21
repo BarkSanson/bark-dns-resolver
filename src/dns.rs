@@ -1,7 +1,10 @@
-use std::thread::panicking;
-use regex::Regex;
-use crate::serialize::{Deserialize, Serialize};
+// TODO: Check if TryFrom instead of From is better. Just panicking in case of a wrong code
+// is probably not the best option. However, this implementation will work for now.
 
+use regex::Regex;
+use crate::bytes::FromWithBytes;
+
+use crate::serialize::{Deserialize, Serialize};
 
 pub struct DomainName(String);
 
@@ -53,15 +56,40 @@ pub enum Type {
     MailExchange = 15
 }
 
+impl From<u16> for Type {
+    fn from(value: u16) -> Self {
+        match value {
+            1 => Type::A,
+            2 => Type::NameServer,
+            5 => Type::CName,
+            6 => Type::SOA,
+            11 => Type::WKS,
+            12 => Type::PTR,
+            15 => Type::MailExchange,
+            _ => panic!("Type not implemented")
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub enum Class {
     Internet = 1,
     Chaos = 3 // ??
 }
 
+impl From<u16> for Class {
+    fn from(value: u16) -> Self {
+        match value {
+            1 => Class::Internet,
+            3 => Class::Chaos,
+            _ => panic!("Invalid class code")
+        }
+    }
+}
+
 pub struct ResourceRecord {
     name: String,
-    rr_type: Type, // Name's rr_type and not type because of the keyword
+    rr_type: Type,
     class: Class,
     ttl: u32,
     rdlength: u16,
@@ -74,9 +102,9 @@ enum Opcode {
     StatusQuery = 2
 }
 
-impl Opcode {
-    fn from_u8(opcode: u8) -> Self {
-        match opcode {
+impl From<u8> for Opcode {
+    fn from(value: u8) -> Self {
+        match value {
             0 => Opcode::StandardQuery,
             2 => Opcode::StatusQuery,
             _ => panic!("Invalid opcode")
@@ -94,9 +122,9 @@ enum ResponseCode {
     RefusedError = 5
 }
 
-impl ResponseCode {
-    fn from_u8(response_code: u8) -> Self {
-        match response_code {
+impl From<u8> for ResponseCode {
+    fn from(value: u8) -> Self {
+        match value {
             0 => ResponseCode::NoError,
             1 => ResponseCode::FormatError,
             2 => ResponseCode::ServerError,
@@ -114,9 +142,9 @@ enum MessageType {
     Response = 1
 }
 
-impl MessageType {
-    fn from_u8(message_type: u8) -> Self {
-        match message_type {
+impl From<u8> for MessageType {
+    fn from(value: u8) -> Self {
+        match value {
             0 => MessageType::Query,
             1 => MessageType::Response,
             _ => panic!("Invalid message type")
@@ -188,21 +216,21 @@ impl Serialize for Header {
     }
 }
 
-impl Deserialize for Header {
-    fn from_bytes(bytes: &[u8]) -> Self {
-        let id = u16::from_be_bytes([bytes[0], bytes[1]]);
-        let flags = bytes[2];
-        let qr = MessageType::from_u8((flags & 0b10000000) >> 7);
-        let opcode = Opcode::from_u8((flags & 0b01111000) >> 3);
+impl From<&[u8]> for Header {
+    fn from(value: &[u8]) -> Self {
+        let id = u16::from_be_bytes([value[0], value[1]]);
+        let flags = value[2];
+        let qr = MessageType::from((flags & 0b10000000) >> 7);
+        let opcode = Opcode::from((flags & 0b01111000) >> 3);
         let aa = (flags & 0b00000100) >> 2;
         let tc = (flags & 0b00000010) >> 1;
         let rd = flags & 0b00000001;
-        let ra = (bytes[3] & 0b10000000) >> 7;
-        let response_code = ResponseCode::from_u8(bytes[3] & 0b00001111);
-        let qdcount = u16::from_be_bytes([bytes[4], bytes[5]]);
-        let ancount = u16::from_be_bytes([bytes[6], bytes[7]]);
-        let nscount = u16::from_be_bytes([bytes[8], bytes[9]]);
-        let arcount = u16::from_be_bytes([bytes[10], bytes[11]);
+        let ra = (value[3] & 0b10000000) >> 7;
+        let response_code = ResponseCode::from(value[3] & 0b00001111);
+        let qdcount = u16::from_be_bytes([value[4], value[5]]);
+        let ancount = u16::from_be_bytes([value[6], value[7]]);
+        let nscount = u16::from_be_bytes([value[8], value[9]]);
+        let arcount = u16::from_be_bytes([value[10], value[11]]);
 
         Self {
             id,
@@ -218,6 +246,7 @@ impl Deserialize for Header {
             nscount,
             arcount
         }
+
     }
 }
 
@@ -228,12 +257,51 @@ pub struct Question {
 }
 
 impl Question {
-    fn new(domain_name: DomainName) -> Self {
+    fn new(qname: DomainName, qtype: Type, class: Class) -> Self {
         Self {
-            qname: domain_name,
+            qname,
+            qtype,
+            qclass
+        }
+    }
+
+    fn new_from_domain_name(qname: DomainName) -> Self {
+        Self {
+            qname,
             qtype: Type::A,
             qclass: Class::Internet
         }
+    }
+}
+
+impl FromWithBytes for Question {
+    fn from_with_bytes(bytes: &[u8]) -> (Self, usize) {
+        // Question is a bit more difficult, since the QNAME field size is
+        // variable
+        let mut labels = Vec::new();
+        let mut i = 12;
+
+        loop {
+            let label_length = bytes[i];
+
+            if label_length == 0 {
+                break;
+            }
+
+            let label =
+                String::from_utf8(bytes[i + 1..i + 1 + label_length as usize].to_vec()).unwrap();
+            labels.push(label);
+
+            i += 1 + label_length as usize;
+        }
+
+        let qname = DomainName(labels.join("."));
+        let qtype = Type::from(u16::from_be_bytes([bytes[i + 1], bytes[i + 2]]));
+        let qclass = Class::from(u16::from_be_bytes([bytes[i + 3], bytes[i + 4]]));
+
+        let question = Question::new(qname, qtype, qclass);
+
+        (question, labels.len() + 4)
     }
 }
 
@@ -285,7 +353,7 @@ impl DNSMessage {
     pub fn new_query_from_hostname(hostname: DomainName) -> Self {
         let id = rand::random::<u16>();
         let header = Header::standard_query_from_id(id);
-        let question = Question::new(hostname);
+        let question = Question::new_from_domain_name(hostname);
 
         Self {
             header,
@@ -305,5 +373,37 @@ impl Serialize for DNSMessage {
         ];
 
         unflattened_bytes.concat()
+    }
+}
+
+impl From<Vec<u8>> for DNSMessage {
+    fn from(value: Vec<u8>) -> Self {
+        // Easy parsing for the header, its size is known beforehand
+        let header = Header::from(&value[0..12]);
+        let (question, bytes_used) = Question::from_with_bytes(&value[..]);
+
+        let answer = None;
+        if header.ancount != 0 {
+        }
+
+        let authority = None;
+        if header.nscount != 0 {
+
+        }
+
+        let additional = None;
+        if header.arcount != 0 {
+
+        }
+
+        todo!();
+
+        Self {
+            header,
+            question,
+            answer,
+            authority,
+            additional
+        }
     }
 }

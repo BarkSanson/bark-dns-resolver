@@ -14,6 +14,7 @@ mod dns;
 mod request;
 mod serialize;
 mod parser;
+mod bytes;
 
 const DEFAULT_NAME_SERVER: &str = "8.8.8.8";
 
