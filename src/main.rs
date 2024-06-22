@@ -13,7 +13,6 @@ mod transport;
 mod dns;
 mod request;
 mod serialize;
-mod parser;
 mod bytes;
 
 const DEFAULT_NAME_SERVER: &str = "8.8.8.8";
@@ -30,16 +29,18 @@ fn get_ip_addresses(
 
     let query = DNSMessage::new_query_from_hostname(hostname);
     let b = query.as_bytes();
-    let r = udp_socket.send(b.as_slice());
+    let _ = udp_socket.send(b.as_slice());
 
     let buf = &mut [0u8; 1024];
 
     let (amt, _src) = udp_socket.recv_from(buf).expect("Didn't receive data");
+
+    let msg = DNSMessage::from(buf.to_vec());
 
     Vec::new()
 }
 
 
 fn main() {
-    get_ip_addresses(DomainName::from_string("hola.com"), IpAddressType::V4, SocketType::UDP);
+    get_ip_addresses(DomainName::from_string("google.com"), IpAddressType::V4, SocketType::UDP);
 }

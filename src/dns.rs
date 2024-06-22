@@ -1,16 +1,19 @@
 // TODO: Check if TryFrom instead of From is better. Just panicking in case of a wrong code
 // is probably not the best option. However, this implementation will work for now.
 
-use regex::Regex;
-use crate::bytes::FromWithBytes;
+use std::io::Read;
+use std::net::Ipv4Addr;
 
-use crate::serialize::{Deserialize, Serialize};
+use regex::Regex;
+
+use crate::bytes::FromWithBytes;
+use crate::serialize::Serialize;
 
 pub struct DomainName(String);
 
 impl DomainName {
     pub fn from_string(domain_name: &str) -> Self {
-        Self::is_valid(domain_name.to_string());
+        //Self::is_valid(domain_name.to_string());
 
         Self(domain_name.to_string())
     }
@@ -26,6 +29,33 @@ impl DomainName {
         }
 
         true
+    }
+}
+
+impl FromWithBytes for DomainName {
+    fn from_with_bytes(bytes: &[u8]) -> (usize, DomainName) {
+        let mut labels_vec = Vec::new();
+        let mut i = 0;
+
+        for byte in bytes {
+            let label_length = *byte;
+
+            if label_length == 0 {
+                break;
+            }
+
+            let label =
+                String::from_utf8(bytes[i + 1..i + 1 + label_length as usize].to_vec()).unwrap();
+            labels_vec.push(label);
+
+            i += 11 + label_length as usize;
+        }
+
+        let labels = labels_vec.join(".");
+
+        let dn = DomainName::from_string(&labels);
+
+        (i, dn)
     }
 }
 
@@ -87,13 +117,46 @@ impl From<u16> for Class {
     }
 }
 
+enum ResponseData {
+    A(Ipv4Addr),
+    // TODO: implement:
+    // - CNAME
+    // - SOA
+    // - WKS
+    // - PTR
+    // - HINFO
+    // - MINFO
+    // - MX
+    // - TXT
+}
+
 pub struct ResourceRecord {
-    name: String,
+    name: DomainName,
     rr_type: Type,
-    class: Class,
-    ttl: u32,
+    rr_class: Class,
+    ttl: i32,
     rdlength: u16,
-    rdata: usize // TODO: change usize
+    rdata: ResponseData
+}
+
+impl ResourceRecord {
+    fn new(
+        name: DomainName,
+        rr_type: Type,
+        rr_class: Class,
+        ttl: i32,
+        rdlength: u16,
+        rdata: ResponseData
+    ) -> Self {
+        Self {
+            name,
+            rr_type,
+            rr_class,
+            ttl,
+            rdlength,
+            rdata
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -257,7 +320,7 @@ pub struct Question {
 }
 
 impl Question {
-    fn new(qname: DomainName, qtype: Type, class: Class) -> Self {
+    fn new(qname: DomainName, qtype: Type, qclass: Class) -> Self {
         Self {
             qname,
             qtype,
@@ -274,42 +337,11 @@ impl Question {
     }
 }
 
-impl FromWithBytes for Question {
-    fn from_with_bytes(bytes: &[u8]) -> (Self, usize) {
-        // Question is a bit more difficult, since the QNAME field size is
-        // variable
-        let mut labels = Vec::new();
-        let mut i = 12;
-
-        loop {
-            let label_length = bytes[i];
-
-            if label_length == 0 {
-                break;
-            }
-
-            let label =
-                String::from_utf8(bytes[i + 1..i + 1 + label_length as usize].to_vec()).unwrap();
-            labels.push(label);
-
-            i += 1 + label_length as usize;
-        }
-
-        let qname = DomainName(labels.join("."));
-        let qtype = Type::from(u16::from_be_bytes([bytes[i + 1], bytes[i + 2]]));
-        let qclass = Class::from(u16::from_be_bytes([bytes[i + 3], bytes[i + 4]]));
-
-        let question = Question::new(qname, qtype, qclass);
-
-        (question, labels.len() + 4)
-    }
-}
-
 impl Serialize for Question {
     fn as_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![];
 
-        let hostname_bytes = self.qname.0.as_bytes();
+        let hostname_bytes = self.qname.as_bytes();
         bytes.extend_from_slice(&hostname_bytes);
 
         let qtype_bytes = self.qtype as u16;
@@ -322,30 +354,26 @@ impl Serialize for Question {
     }
 }
 
-pub struct Answer;
-pub struct Authority;
-pub struct Additional;
-
 pub struct DNSMessage {
     header: Header,
     question: Question,
-    answer: Option<Answer>,
-    authority: Option<Authority>,
-    additional: Option<Additional>
+    answers: Option<Vec<ResourceRecord>>,
+    authorities: Option<Vec<ResourceRecord>>,
+    additional: Option<Vec<ResourceRecord>>
 }
 
 impl DNSMessage {
     pub fn new_from_components(
         header: Header,
         question: Question,
-        answer: Option<Answer>,
-        authority: Option<Authority>,
-        additional: Option<Additional>) -> Self {
+        answers: Option<Vec<ResourceRecord>>,
+        authorities: Option<Vec<ResourceRecord>>,
+        additional: Option<Vec<ResourceRecord>>) -> Self {
         Self {
             header,
             question,
-            answer,
-            authority,
+            answers,
+            authorities,
             additional
         }
     }
@@ -358,8 +386,8 @@ impl DNSMessage {
         Self {
             header,
             question,
-            answer: None,
-            authority: None,
+            answers: None,
+            authorities: None,
             additional: None
         }
     }
@@ -367,7 +395,7 @@ impl DNSMessage {
 
 impl Serialize for DNSMessage {
     fn as_bytes(&self) -> Vec<u8> {
-        let mut unflattened_bytes = vec![
+        let unflattened_bytes = vec![
             self.header.as_bytes(),
             self.question.as_bytes()
         ];
@@ -378,15 +406,95 @@ impl Serialize for DNSMessage {
 
 impl From<Vec<u8>> for DNSMessage {
     fn from(value: Vec<u8>) -> Self {
-        // Easy parsing for the header, its size is known beforehand
-        let header = Header::from(&value[0..12]);
-        let (question, bytes_used) = Question::from_with_bytes(&value[..]);
+        let header = Header::from(&value[..12]);
+        let mut i= 12usize;
 
-        let answer = None;
+        let (qname_length, qname) =
+            DomainName::from_with_bytes(&value[i..]);
+
+        i += qname_length;
+
+        let qtype = Type::from(u16::from_be_bytes([
+            value[i + 1],
+            value[i + 2]]));
+        let qclass = Class::from(u16::from_be_bytes([
+            value[i + 3],
+            value[i + 4]]));
+
+        let question = Question::new(qname, qtype, qclass);
+
+        let mut answers = None;
         if header.ancount != 0 {
+            let mut answers_vec = Vec::new();
+            for _ in 0..header.ancount {
+                let (name_length, name) = DomainName::from_with_bytes(&value[i..]);
+
+                i += name_length;
+
+                let rr_type = Type::from(u16::from_be_bytes([
+                    value[i + 1],
+                    value[i + 2]]));
+
+                let rr_class = Class::from(u16::from_be_bytes([
+                    value[i + 3],
+                    value[i + 4]]));
+
+                i += 4;
+
+                let ttl = i32::from_be_bytes([
+                    value[i + 1],
+                    value[i + 2],
+                    value[i + 3],
+                    value[i + 4],
+                ]);
+
+                i += 4;
+
+                let rdlength = u16::from_be_bytes([
+                    value[i + 1],
+                    value[i + 2],
+                ]);
+
+                i += 4;
+
+                // RData depends on the values of class and type. However,
+                // since all transactions usually occur using the IN class - the
+                // Internet - and because I don't know what the Chaos class is (just yet),
+                // I'll just implement it this way (temporally (or not 😇))
+                let rdata = match rr_type {
+                    Type::A => {
+                        ResponseData::A(Ipv4Addr::from([
+                            value[i],
+                            value[i + 1],
+                            value[i + 2],
+                            value[i + 3],
+                        ]))
+                    },
+                    _ => panic!("Type not supported")
+                    // Type::NameServer => {}
+                    // Type::CName => {}
+                    // Type::SOA => {}
+                    // Type::WKS => {}
+                    // Type::PTR => {}
+                    // Type::MailExchange => {}
+                };
+
+                let rr = ResourceRecord::new(
+                    name,
+                    rr_type,
+                    rr_class,
+                    ttl,
+                    rdlength,
+                    rdata
+                );
+
+                answers_vec.push(rr);
+            }
+
+            answers = Some(answers_vec);
         }
 
-        let authority = None;
+        let authorities = None;
         if header.nscount != 0 {
 
         }
@@ -396,13 +504,11 @@ impl From<Vec<u8>> for DNSMessage {
 
         }
 
-        todo!();
-
         Self {
             header,
             question,
-            answer,
-            authority,
+            answers,
+            authorities,
             additional
         }
     }
