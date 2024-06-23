@@ -37,8 +37,8 @@ impl FromWithBytes for DomainName {
         let mut labels_vec = Vec::new();
         let mut i = 0;
 
-        for byte in bytes {
-            let label_length = *byte;
+        while bytes[i] != 0 {
+            let label_length = bytes[i];
 
             if label_length == 0 {
                 break;
@@ -48,7 +48,7 @@ impl FromWithBytes for DomainName {
                 String::from_utf8(bytes[i + 1..i + 1 + label_length as usize].to_vec()).unwrap();
             labels_vec.push(label);
 
-            i += 11 + label_length as usize;
+            i += 1 + label_length as usize;
         }
 
         let labels = labels_vec.join(".");
@@ -420,6 +420,8 @@ impl From<Vec<u8>> for DNSMessage {
         let qclass = Class::from(u16::from_be_bytes([
             value[i + 3],
             value[i + 4]]));
+
+        i += 5;
 
         let question = Question::new(qname, qtype, qclass);
 
