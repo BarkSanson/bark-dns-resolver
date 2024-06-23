@@ -1,19 +1,10 @@
-use std::net;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::str::FromStr;
 
-use ip::IpAddressType;
-use transport::SocketType;
-
-use crate::dns::{DNSMessage, DomainName, ResourceRecord};
-use crate::serialize::Serialize;
-
-mod ip;
-mod transport;
-mod dns;
-mod request;
-mod serialize;
-mod bytes;
+use bark_dns_resolver::ip::IpAddressType;
+use bark_dns_resolver::transport::SocketType;
+use bark_dns_resolver::dns::{DNSMessage, DomainName};
+use bark_dns_resolver::serialize::Serialize;
 
 const DEFAULT_NAME_SERVER: &str = "8.8.8.8";
 
@@ -33,16 +24,14 @@ fn get_ip_addresses(
 
     let buf = &mut [0u8; 1024];
 
-    let (amt, _src) = udp_socket.recv_from(buf).expect("Didn't receive data");
+    let (_, _src) = udp_socket.recv_from(buf).expect("Didn't receive data");
 
     let msg = DNSMessage::from(buf.to_vec());
 
-    let r = vec![msg];
-
-    r
+    vec![msg]
 }
 
 
 fn main() {
-    let result = get_ip_addresses(DomainName::from_string("google.com"), IpAddressType::V4, SocketType::UDP);
+    get_ip_addresses(DomainName::from_string("gmail.google.com"), IpAddressType::V4, SocketType::UDP);
 }
