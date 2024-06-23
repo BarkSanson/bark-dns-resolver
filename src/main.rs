@@ -5,7 +5,7 @@ use std::str::FromStr;
 use ip::IpAddressType;
 use transport::SocketType;
 
-use crate::dns::{DNSMessage, DomainName};
+use crate::dns::{DNSMessage, DomainName, ResourceRecord};
 use crate::serialize::Serialize;
 
 mod ip;
@@ -21,7 +21,7 @@ fn get_ip_addresses(
     hostname: DomainName,
     family: IpAddressType,
     socket_type: SocketType
-    ) -> Vec<net::Ipv4Addr> {
+    ) -> Vec<DNSMessage> {
     let socket_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
     let dns_server_socket_addr = SocketAddrV4::new(Ipv4Addr::from_str(DEFAULT_NAME_SERVER).unwrap(), 53);
     let udp_socket = UdpSocket::bind(socket_addr).expect("Could not bind to address");
@@ -37,10 +37,12 @@ fn get_ip_addresses(
 
     let msg = DNSMessage::from(buf.to_vec());
 
-    Vec::new()
+    let r = vec![msg];
+
+    r
 }
 
 
 fn main() {
-    get_ip_addresses(DomainName::from_string("google.com"), IpAddressType::V4, SocketType::UDP);
+    let result = get_ip_addresses(DomainName::from_string("google.com"), IpAddressType::V4, SocketType::UDP);
 }

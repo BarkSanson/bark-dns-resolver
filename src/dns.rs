@@ -429,35 +429,50 @@ impl From<Vec<u8>> for DNSMessage {
         if header.ancount != 0 {
             let mut answers_vec = Vec::new();
             for _ in 0..header.ancount {
-                let (name_length, name) = DomainName::from_with_bytes(&value[i..]);
+                // Check compression offset. This raw comparison is
+                // safe since labels are restricted to 63 octets or less
+                // (see RFC 1035).
+                let compression = value[i] >> 6;
 
-                i += name_length;
+                // By default, suppose compression is not used, although
+                // this shouldn't be the case
+                let mut bytes_of_labels = &value[i..];
+                if compression == 0b00000011 {
+                    // 0x3FFF discards the first two bits of the word, since these are not
+                    // necessary because they only indicate that the word is a pointer
+                    let pointer = u16::from_be_bytes([value[i], value[i + 1]]) & 0x3FFF;
+                    bytes_of_labels = &value[pointer as usize..];
+                }
+
+                let (name_length, name) = DomainName::from_with_bytes(bytes_of_labels);
+
+                i += if compression == 0b00000011 { 2 } else { name_length };
 
                 let rr_type = Type::from(u16::from_be_bytes([
-                    value[i + 1],
-                    value[i + 2]]));
+                    value[i],
+                    value[i + 1]]));
 
                 let rr_class = Class::from(u16::from_be_bytes([
-                    value[i + 3],
-                    value[i + 4]]));
+                    value[i + 2],
+                    value[i + 3]]));
 
                 i += 4;
 
                 let ttl = i32::from_be_bytes([
+                    value[i],
                     value[i + 1],
                     value[i + 2],
                     value[i + 3],
-                    value[i + 4],
                 ]);
 
                 i += 4;
 
                 let rdlength = u16::from_be_bytes([
+                    value[i],
                     value[i + 1],
-                    value[i + 2],
                 ]);
 
-                i += 4;
+                i += 2;
 
                 // RData depends on the values of class and type. However,
                 // since all transactions usually occur using the IN class - the
