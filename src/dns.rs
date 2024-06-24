@@ -1,14 +1,18 @@
-// TODO: Check if TryFrom instead of From is better. Just panicking in case of a wrong code
+// TODO:
+// - Check if TryFrom instead of From is better. Just panicking in case of a wrong code
 // is probably not the best option. However, this implementation will work for now.
+// - Limit label length to 63 octets
 
 use std::io::Read;
 use std::net::Ipv4Addr;
+use std::ptr::read;
 
 use regex::Regex;
 
 use crate::bytes::FromWithBytes;
 use crate::serialize::Serialize;
 
+#[derive(Debug)]
 pub struct DomainName(String);
 
 impl DomainName {
@@ -30,32 +34,59 @@ impl DomainName {
 
         true
     }
-}
 
-impl FromWithBytes for DomainName {
-    fn from_with_bytes(bytes: &[u8]) -> (usize, DomainName) {
+    fn from_with_bytes(bytes: &[u8], initial_idx: usize) -> (usize, DomainName) {
         let mut labels_vec = Vec::new();
-        let mut i = 0;
+        let mut idx = initial_idx;
+        let mut is_compression_byte = false;
+        let mut read_bytes = 0;
+        let mut nested = false;
 
-        while bytes[i] != 0 {
-            let label_length = bytes[i];
+        while bytes[idx] != 0 {
+            // Check if compression is being used. This raw comparison is
+            // safe since labels are restricted to 63 octets or less
+            // (see RFC 1035).
+            is_compression_byte = (bytes[idx] >> 6) == 0b00000011;
+
+            if is_compression_byte  {
+                // 0x3FFF discards the first two bits of the word, since these are not
+                // necessary because they only indicate that the word is a pointer
+                idx = (u16::from_be_bytes([bytes[idx], bytes[idx + 1]]) & 0x3FFF) as usize;
+
+                if !nested {
+                    read_bytes += 2;
+                    nested = true;
+                }
+                continue;
+            }
+
+            let label_length = bytes[idx] as usize;
+            idx += 1;
 
             if label_length == 0 {
                 break;
             }
 
             let label =
-                String::from_utf8(bytes[i + 1..i + 1 + label_length as usize].to_vec()).unwrap();
+                String::from_utf8(bytes[idx..idx + label_length].to_vec()).unwrap();
             labels_vec.push(label);
 
-            i += 1 + label_length as usize;
+            idx += label_length;
+            if !nested {
+                read_bytes += label_length + 1;
+            }
+        }
+
+        // Also count the 0 byte
+        if !nested {
+            read_bytes += 1;
         }
 
         let labels = labels_vec.join(".");
 
         let dn = DomainName::from_string(&labels);
 
-        (i, dn)
+        (read_bytes, dn)
     }
 }
 
@@ -119,6 +150,7 @@ impl From<u16> for Class {
 
 enum ResponseData {
     A(Ipv4Addr),
+    CName(DomainName)
     // TODO: implement:
     // - CNAME
     // - SOA
@@ -409,19 +441,18 @@ impl From<Vec<u8>> for DNSMessage {
         let header = Header::from(&value[..12]);
         let mut i= 12usize;
 
-        let (qname_length, qname) =
-            DomainName::from_with_bytes(&value[i..]);
+        let (qname_length, qname) = DomainName::from_with_bytes(&value, i);
 
         i += qname_length;
 
         let qtype = Type::from(u16::from_be_bytes([
-            value[i + 1],
-            value[i + 2]]));
+            value[i],
+            value[i + 1]]));
         let qclass = Class::from(u16::from_be_bytes([
-            value[i + 3],
-            value[i + 4]]));
+            value[i + 2],
+            value[i + 3]]));
 
-        i += 5;
+        i += 4;
 
         let question = Question::new(qname, qtype, qclass);
 
@@ -429,24 +460,10 @@ impl From<Vec<u8>> for DNSMessage {
         if header.ancount != 0 {
             let mut answers_vec = Vec::new();
             for _ in 0..header.ancount {
-                // Check compression offset. This raw comparison is
-                // safe since labels are restricted to 63 octets or less
-                // (see RFC 1035).
-                let compression = value[i] >> 6;
 
-                // By default, suppose compression is not used, although
-                // this shouldn't be the case
-                let mut bytes_of_labels = &value[i..];
-                if compression == 0b00000011 {
-                    // 0x3FFF discards the first two bits of the word, since these are not
-                    // necessary because they only indicate that the word is a pointer
-                    let pointer = u16::from_be_bytes([value[i], value[i + 1]]) & 0x3FFF;
-                    bytes_of_labels = &value[pointer as usize..];
-                }
+                let (read_bytes, name) = DomainName::from_with_bytes(value.as_slice(), i);
 
-                let (name_length, name) = DomainName::from_with_bytes(bytes_of_labels);
-
-                i += if compression == 0b00000011 { 2 } else { name_length };
+                i += read_bytes;
 
                 let rr_type = Type::from(u16::from_be_bytes([
                     value[i],
@@ -487,9 +504,14 @@ impl From<Vec<u8>> for DNSMessage {
                             value[i + 3],
                         ]))
                     },
+                    Type::CName => {
+                        let (read_bytes, dn) = DomainName::from_with_bytes(&value, i);
+                        println!("{:?}", dn);
+                        i += read_bytes;
+                        ResponseData::CName(dn)
+                    },
                     _ => panic!("Type not supported")
                     // Type::NameServer => {}
-                    // Type::CName => {}
                     // Type::SOA => {}
                     // Type::WKS => {}
                     // Type::PTR => {}
