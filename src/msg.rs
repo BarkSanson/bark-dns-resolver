@@ -5,191 +5,11 @@
 
 use std::io::Read;
 use std::net::Ipv4Addr;
-use std::ptr::read;
-
-use regex::Regex;
 
 use crate::bytes::FromWithBytes;
+use crate::domain_name::DomainName;
+use crate::resource_record::{Class, ResourceRecord, ResponseData, Type};
 use crate::serialize::Serialize;
-
-#[derive(Debug)]
-pub struct DomainName(String);
-
-impl DomainName {
-    pub fn from_string(domain_name: &str) -> Self {
-        //Self::is_valid(domain_name.to_string());
-
-        Self(domain_name.to_string())
-    }
-
-    fn is_valid(domain_name: String) -> bool {
-        // I literally copied this regex from stackoverflow
-        let reg = Regex::new(
-            r"^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])$")
-            .unwrap();
-
-        if !reg.is_match(&domain_name) {
-            panic!("Invalid domain name");
-        }
-
-        true
-    }
-
-    fn from_with_bytes(bytes: &[u8], initial_idx: usize) -> (usize, DomainName) {
-        let mut labels_vec = Vec::new();
-        let mut idx = initial_idx;
-        let mut is_compression_byte = false;
-        let mut read_bytes = 0;
-        let mut nested = false;
-
-        while bytes[idx] != 0 {
-            // Check if compression is being used. This raw comparison is
-            // safe since labels are restricted to 63 octets or less
-            // (see RFC 1035).
-            is_compression_byte = (bytes[idx] >> 6) == 0b00000011;
-
-            if is_compression_byte  {
-                // 0x3FFF discards the first two bits of the word, since these are not
-                // necessary because they only indicate that the word is a pointer
-                idx = (u16::from_be_bytes([bytes[idx], bytes[idx + 1]]) & 0x3FFF) as usize;
-
-                if !nested {
-                    read_bytes += 2;
-                    nested = true;
-                }
-                continue;
-            }
-
-            let label_length = bytes[idx] as usize;
-            idx += 1;
-
-            if label_length == 0 {
-                break;
-            }
-
-            let label =
-                String::from_utf8(bytes[idx..idx + label_length].to_vec()).unwrap();
-            labels_vec.push(label);
-
-            idx += label_length;
-            if !nested {
-                read_bytes += label_length + 1;
-            }
-        }
-
-        // Also count the 0 byte
-        if !nested {
-            read_bytes += 1;
-        }
-
-        let labels = labels_vec.join(".");
-
-        let dn = DomainName::from_string(&labels);
-
-        (read_bytes, dn)
-    }
-}
-
-impl Serialize for DomainName {
-    fn as_bytes(&self) -> Vec<u8> {
-        let mut bytes = vec![];
-
-        for label in self.0.split('.') {
-            let label_length = label.len() as u8;
-            bytes.push(label_length);
-            bytes.extend_from_slice(label.as_bytes());
-        }
-
-        bytes.push(0);
-
-        bytes
-    }
-}
-
-#[derive(Copy, Clone)]
-pub enum Type {
-    A = 1,
-    NameServer = 2,
-    CName = 5,
-    SOA = 6,
-    WKS = 11,
-    PTR = 12,
-    MailExchange = 15
-}
-
-impl From<u16> for Type {
-    fn from(value: u16) -> Self {
-        match value {
-            1 => Type::A,
-            2 => Type::NameServer,
-            5 => Type::CName,
-            6 => Type::SOA,
-            11 => Type::WKS,
-            12 => Type::PTR,
-            15 => Type::MailExchange,
-            _ => panic!("Type not implemented")
-        }
-    }
-}
-
-#[derive(Copy, Clone)]
-pub enum Class {
-    Internet = 1,
-    Chaos = 3 // ??
-}
-
-impl From<u16> for Class {
-    fn from(value: u16) -> Self {
-        match value {
-            1 => Class::Internet,
-            3 => Class::Chaos,
-            _ => panic!("Invalid class code")
-        }
-    }
-}
-
-enum ResponseData {
-    A(Ipv4Addr),
-    CName(DomainName)
-    // TODO: implement:
-    // - CNAME
-    // - SOA
-    // - WKS
-    // - PTR
-    // - HINFO
-    // - MINFO
-    // - MX
-    // - TXT
-}
-
-pub struct ResourceRecord {
-    name: DomainName,
-    rr_type: Type,
-    rr_class: Class,
-    ttl: i32,
-    rdlength: u16,
-    rdata: ResponseData
-}
-
-impl ResourceRecord {
-    fn new(
-        name: DomainName,
-        rr_type: Type,
-        rr_class: Class,
-        ttl: i32,
-        rdlength: u16,
-        rdata: ResponseData
-    ) -> Self {
-        Self {
-            name,
-            rr_type,
-            rr_class,
-            ttl,
-            rdlength,
-            rdata
-        }
-    }
-}
 
 #[derive(Copy, Clone)]
 enum Opcode {
@@ -282,7 +102,7 @@ impl Header {
 }
 
 impl Serialize for Header {
-    fn as_bytes(&self) -> Vec<u8> {
+    fn serialize(&self) -> Vec<u8> {
         let mut bytes = vec![];
 
         let id_bytes = self.id.to_be_bytes();
@@ -370,10 +190,10 @@ impl Question {
 }
 
 impl Serialize for Question {
-    fn as_bytes(&self) -> Vec<u8> {
+    fn serialize(&self) -> Vec<u8> {
         let mut bytes = vec![];
 
-        let hostname_bytes = self.qname.as_bytes();
+        let hostname_bytes = self.qname.serialize();
         bytes.extend_from_slice(&hostname_bytes);
 
         let qtype_bytes = self.qtype as u16;
@@ -395,7 +215,7 @@ pub struct DNSMessage {
 }
 
 impl DNSMessage {
-    pub fn new_from_components(
+    pub(crate) fn new_from_components(
         header: Header,
         question: Question,
         answers: Option<Vec<ResourceRecord>>,
@@ -410,7 +230,7 @@ impl DNSMessage {
         }
     }
 
-    pub fn new_query_from_hostname(hostname: DomainName) -> Self {
+    pub(crate) fn new_query_from_hostname(hostname: DomainName) -> Self {
         let id = rand::random::<u16>();
         let header = Header::standard_query_from_id(id);
         let question = Question::new_from_domain_name(hostname);
@@ -426,10 +246,10 @@ impl DNSMessage {
 }
 
 impl Serialize for DNSMessage {
-    fn as_bytes(&self) -> Vec<u8> {
+    fn serialize(&self) -> Vec<u8> {
         let unflattened_bytes = vec![
-            self.header.as_bytes(),
-            self.question.as_bytes()
+            self.header.serialize(),
+            self.question.serialize()
         ];
 
         unflattened_bytes.concat()
@@ -506,7 +326,6 @@ impl From<Vec<u8>> for DNSMessage {
                     },
                     Type::CName => {
                         let (read_bytes, dn) = DomainName::from_with_bytes(&value, i);
-                        println!("{:?}", dn);
                         i += read_bytes;
                         ResponseData::CName(dn)
                     },

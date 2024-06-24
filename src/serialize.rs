@@ -1,7 +1,7 @@
 pub trait Serialize {
-    fn as_bytes(&self) -> Vec<u8>;
+    fn serialize(&self) -> Vec<u8>;
 }
 
 pub trait Deserialize {
-    fn from_bytes(bytes: &[u8]) -> Self;
+    fn deserialize(bytes: &[u8]) -> Self;
 }

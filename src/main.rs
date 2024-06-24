@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use bark_dns_resolver::ip::IpAddressType;
 use bark_dns_resolver::transport::SocketType;
-use bark_dns_resolver::dns::{DNSMessage, DomainName};
+use bark_dns_resolver::msg::{DNSMessage, DomainName};
 use bark_dns_resolver::serialize::Serialize;
 
 const DEFAULT_NAME_SERVER: &str = "8.8.8.8";
@@ -19,10 +19,10 @@ fn get_ip_addresses(
     udp_socket.connect(dns_server_socket_addr).expect(format!("Couldn't connect to {:?}", dns_server_socket_addr).as_str());
 
     let query = DNSMessage::new_query_from_hostname(hostname);
-    let b = query.as_bytes();
+    let b = query.serialize();
     let _ = udp_socket.send(b.as_slice());
 
-    let buf = &mut [0u8; 1024];
+    let buf = &mut [0u8; 512];
 
     let (_, _src) = udp_socket.recv_from(buf).expect("Didn't receive data");
 
