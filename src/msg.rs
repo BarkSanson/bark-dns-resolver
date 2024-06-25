@@ -6,7 +6,7 @@
 use std::net::Ipv4Addr;
 
 use crate::domain_name::DomainName;
-use crate::resource_record::{Class, ResourceRecord, ResponseData, Type};
+use crate::resource_record::{Class, ResourceRecordHeader, ResponseData, Type};
 use crate::serialize::{Deserialize, EncodingError, Serialize};
 
 pub enum MessageError {
@@ -224,18 +224,18 @@ impl Serialize for Question {
 pub struct DNSMessage {
     header: Header,
     question: Question,
-    answers: Option<Vec<ResourceRecord>>,
-    authorities: Option<Vec<ResourceRecord>>,
-    additional: Option<Vec<ResourceRecord>>
+    answers: Option<Vec<ResourceRecordHeader>>,
+    authorities: Option<Vec<ResourceRecordHeader>>,
+    additional: Option<Vec<ResourceRecordHeader>>
 }
 
 impl DNSMessage {
     pub(crate) fn new_from_components(
         header: Header,
         question: Question,
-        answers: Option<Vec<ResourceRecord>>,
-        authorities: Option<Vec<ResourceRecord>>,
-        additional: Option<Vec<ResourceRecord>>) -> Self {
+        answers: Option<Vec<ResourceRecordHeader>>,
+        authorities: Option<Vec<ResourceRecordHeader>>,
+        additional: Option<Vec<ResourceRecordHeader>>) -> Self {
         Self {
             header,
             question,
@@ -355,7 +355,7 @@ impl Deserialize for DNSMessage {
                     // Type::MailExchange => {}
                 };
 
-                let rr = ResourceRecord::new(
+                let rr = ResourceRecordHeader::new(
                     name,
                     rr_type,
                     rr_class,

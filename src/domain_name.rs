@@ -1,5 +1,5 @@
 use regex::Regex;
-use crate::serialize::{EncodingError, Serialize};
+use crate::serialize::{Deserialize, EncodingError, Serialize};
 
 #[derive(Debug)]
 pub(crate) struct DomainName(String);
@@ -23,10 +23,35 @@ impl DomainName {
 
         true
     }
+}
 
-    pub(crate) fn from_with_bytes(bytes: &[u8], initial_idx: usize) -> (usize, DomainName) {
+impl Serialize for DomainName {
+    type Error = EncodingError;
+
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
+        let mut bytes = vec![];
+
+        for label in self.0.split('.') {
+            let label_length = label.len() as u8;
+            bytes.push(label_length);
+            bytes.extend_from_slice(label.as_bytes());
+        }
+
+        bytes.push(0);
+
+        Ok(bytes)
+    }
+}
+
+impl Deserialize for DomainName {
+    type Error = EncodingError;
+
+    fn deserialize(bytes: &[u8], offset: usize) -> Result<(Self, usize), Self::Error>
+    where
+        Self: Sized
+    {
         let mut labels_vec = Vec::new();
-        let mut idx = initial_idx;
+        let mut idx = offset;
         let mut is_compression_byte = false;
         let mut read_bytes = 0;
         let mut nested = false;
@@ -76,23 +101,6 @@ impl DomainName {
         let dn = DomainName::from_string(&labels);
 
         (read_bytes, dn)
-    }
-}
 
-impl Serialize for DomainName {
-    type Error = EncodingError;
-
-    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
-        let mut bytes = vec![];
-
-        for label in self.0.split('.') {
-            let label_length = label.len() as u8;
-            bytes.push(label_length);
-            bytes.extend_from_slice(label.as_bytes());
-        }
-
-        bytes.push(0);
-
-        Ok(bytes)
     }
 }
