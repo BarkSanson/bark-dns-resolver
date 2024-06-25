@@ -1,7 +1,14 @@
+
+pub(crate) enum EncodingError {
+}
+
 pub trait Serialize {
-    fn serialize(&self) -> Vec<u8>;
+    type Error;
+
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error>;
 }
 
 pub trait Deserialize {
-    fn deserialize(bytes: &[u8]) -> Self;
+    type Error;
+    fn deserialize(bytes: &[u8]) -> Result<Self, Self::Error> where Self: Sized;
 }

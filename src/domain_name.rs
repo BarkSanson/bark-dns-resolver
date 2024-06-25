@@ -1,5 +1,5 @@
 use regex::Regex;
-use crate::serialize::Serialize;
+use crate::serialize::{EncodingError, Serialize};
 
 #[derive(Debug)]
 pub(crate) struct DomainName(String);
@@ -80,7 +80,9 @@ impl DomainName {
 }
 
 impl Serialize for DomainName {
-    fn serialize(&self) -> Vec<u8> {
+    type Error = EncodingError;
+
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
         let mut bytes = vec![];
 
         for label in self.0.split('.') {
@@ -91,6 +93,6 @@ impl Serialize for DomainName {
 
         bytes.push(0);
 
-        bytes
+        Ok(bytes)
     }
 }

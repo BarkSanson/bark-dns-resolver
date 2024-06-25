@@ -3,13 +3,17 @@
 // is probably not the best option. However, this implementation will work for now.
 // - Limit label length to 63 octets
 
-use std::io::Read;
 use std::net::Ipv4Addr;
 
-use crate::bytes::FromWithBytes;
 use crate::domain_name::DomainName;
 use crate::resource_record::{Class, ResourceRecord, ResponseData, Type};
-use crate::serialize::Serialize;
+use crate::serialize::{Deserialize, EncodingError, Serialize};
+
+pub enum MessageError {
+    InvalidOpcode,
+    InvalidResponseCode,
+    InvalidMessageType
+}
 
 #[derive(Copy, Clone)]
 enum Opcode {
@@ -17,12 +21,14 @@ enum Opcode {
     StatusQuery = 2
 }
 
-impl From<u8> for Opcode {
-    fn from(value: u8) -> Self {
+impl TryFrom<u8> for Opcode {
+    type Error = MessageError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Opcode::StandardQuery,
-            2 => Opcode::StatusQuery,
-            _ => panic!("Invalid opcode")
+            0 => Ok(Opcode::StandardQuery),
+            2 => Ok(Opcode::StatusQuery),
+            _ => Err(MessageError::InvalidOpcode)
         }
     }
 }
@@ -37,16 +43,18 @@ enum ResponseCode {
     RefusedError = 5
 }
 
-impl From<u8> for ResponseCode {
-    fn from(value: u8) -> Self {
+impl TryFrom<u8> for ResponseCode {
+    type Error = MessageError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => ResponseCode::NoError,
-            1 => ResponseCode::FormatError,
-            2 => ResponseCode::ServerError,
-            3 => ResponseCode::NameError,
-            4 => ResponseCode::NotImplementedError,
-            5 => ResponseCode::RefusedError,
-            _ => panic!("Invalid response code")
+            0 => Ok(ResponseCode::NoError),
+            1 => Ok(ResponseCode::FormatError),
+            2 => Ok(ResponseCode::ServerError),
+            3 => Ok(ResponseCode::NameError),
+            4 => Ok(ResponseCode::NotImplementedError),
+            5 => Ok(ResponseCode::RefusedError),
+            _ => Err(MessageError::InvalidResponseCode)
         }
     }
 }
@@ -57,12 +65,14 @@ enum MessageType {
     Response = 1
 }
 
-impl From<u8> for MessageType {
-    fn from(value: u8) -> Self {
+impl TryFrom<u8> for MessageType {
+    type Error = MessageError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => MessageType::Query,
-            1 => MessageType::Response,
-            _ => panic!("Invalid message type")
+            0 => Ok(MessageType::Query),
+            1 => Ok(MessageType::Response),
+            _ => Err(MessageError::InvalidMessageType)
         }
     }
 }
@@ -102,7 +112,9 @@ impl Header {
 }
 
 impl Serialize for Header {
-    fn serialize(&self) -> Vec<u8> {
+    type Error = EncodingError;
+
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
         let mut bytes = vec![];
 
         let id_bytes = self.id.to_be_bytes();
@@ -127,27 +139,29 @@ impl Serialize for Header {
             bytes.extend_from_slice(&count_bytes);
         }
 
-        bytes
+        Ok(bytes)
     }
 }
 
-impl From<&[u8]> for Header {
-    fn from(value: &[u8]) -> Self {
+impl TryFrom<&[u8]> for Header {
+    type Error = MessageError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         let id = u16::from_be_bytes([value[0], value[1]]);
         let flags = value[2];
-        let qr = MessageType::from((flags & 0b10000000) >> 7);
-        let opcode = Opcode::from((flags & 0b01111000) >> 3);
+        let qr = MessageType::try_from((flags & 0b10000000) >> 7)?;
+        let opcode = Opcode::try_from((flags & 0b01111000) >> 3)?;
         let aa = (flags & 0b00000100) >> 2;
         let tc = (flags & 0b00000010) >> 1;
         let rd = flags & 0b00000001;
         let ra = (value[3] & 0b10000000) >> 7;
-        let response_code = ResponseCode::from(value[3] & 0b00001111);
+        let response_code = ResponseCode::try_from(value[3] & 0b00001111)?;
         let qdcount = u16::from_be_bytes([value[4], value[5]]);
         let ancount = u16::from_be_bytes([value[6], value[7]]);
         let nscount = u16::from_be_bytes([value[8], value[9]]);
         let arcount = u16::from_be_bytes([value[10], value[11]]);
 
-        Self {
+        Ok(Self {
             id,
             qr,
             opcode,
@@ -160,8 +174,7 @@ impl From<&[u8]> for Header {
             ancount,
             nscount,
             arcount
-        }
-
+        })
     }
 }
 
@@ -190,10 +203,12 @@ impl Question {
 }
 
 impl Serialize for Question {
-    fn serialize(&self) -> Vec<u8> {
+    type Error = EncodingError;
+
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
         let mut bytes = vec![];
 
-        let hostname_bytes = self.qname.serialize();
+        let hostname_bytes = self.qname.serialize()?;
         bytes.extend_from_slice(&hostname_bytes);
 
         let qtype_bytes = self.qtype as u16;
@@ -202,7 +217,7 @@ impl Serialize for Question {
         let qclass_bytes = self.qclass as u16;
         bytes.extend_from_slice(&qclass_bytes.to_be_bytes());
 
-        bytes
+        Ok(bytes)
     }
 }
 
@@ -246,31 +261,35 @@ impl DNSMessage {
 }
 
 impl Serialize for DNSMessage {
-    fn serialize(&self) -> Vec<u8> {
+    type Error = EncodingError;
+
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
         let unflattened_bytes = vec![
-            self.header.serialize(),
-            self.question.serialize()
+            self.header.serialize()?,
+            self.question.serialize()?
         ];
 
-        unflattened_bytes.concat()
+        Ok(unflattened_bytes.concat())
     }
 }
 
-impl From<Vec<u8>> for DNSMessage {
-    fn from(value: Vec<u8>) -> Self {
-        let header = Header::from(&value[..12]);
+impl Deserialize for DNSMessage {
+    type Error = MessageError;
+
+    fn deserialize(bytes: &[u8]) -> Result<Self, Self::Error>{
+        let header = Header::try_from(&bytes[..12])?;
         let mut i= 12usize;
 
-        let (qname_length, qname) = DomainName::from_with_bytes(&value, i);
+        let (qname_length, qname) = DomainName::from_with_bytes(&bytes, i);
 
         i += qname_length;
 
         let qtype = Type::from(u16::from_be_bytes([
-            value[i],
-            value[i + 1]]));
+            bytes[i],
+            bytes[i + 1]]));
         let qclass = Class::from(u16::from_be_bytes([
-            value[i + 2],
-            value[i + 3]]));
+            bytes[i + 2],
+            bytes[i + 3]]));
 
         i += 4;
 
@@ -280,33 +299,32 @@ impl From<Vec<u8>> for DNSMessage {
         if header.ancount != 0 {
             let mut answers_vec = Vec::new();
             for _ in 0..header.ancount {
-
-                let (read_bytes, name) = DomainName::from_with_bytes(value.as_slice(), i);
+                let (read_bytes, name) = DomainName::from_with_bytes(bytes, i);
 
                 i += read_bytes;
 
                 let rr_type = Type::from(u16::from_be_bytes([
-                    value[i],
-                    value[i + 1]]));
+                    bytes[i],
+                    bytes[i + 1]]));
 
                 let rr_class = Class::from(u16::from_be_bytes([
-                    value[i + 2],
-                    value[i + 3]]));
+                    bytes[i + 2],
+                    bytes[i + 3]]));
 
                 i += 4;
 
                 let ttl = i32::from_be_bytes([
-                    value[i],
-                    value[i + 1],
-                    value[i + 2],
-                    value[i + 3],
+                    bytes[i],
+                    bytes[i + 1],
+                    bytes[i + 2],
+                    bytes[i + 3],
                 ]);
 
                 i += 4;
 
                 let rdlength = u16::from_be_bytes([
-                    value[i],
-                    value[i + 1],
+                    bytes[i],
+                    bytes[i + 1],
                 ]);
 
                 i += 2;
@@ -318,14 +336,14 @@ impl From<Vec<u8>> for DNSMessage {
                 let rdata = match rr_type {
                     Type::A => {
                         ResponseData::A(Ipv4Addr::from([
-                            value[i],
-                            value[i + 1],
-                            value[i + 2],
-                            value[i + 3],
+                            bytes[i],
+                            bytes[i + 1],
+                            bytes[i + 2],
+                            bytes[i + 3],
                         ]))
                     },
                     Type::CName => {
-                        let (read_bytes, dn) = DomainName::from_with_bytes(&value, i);
+                        let (read_bytes, dn) = DomainName::from_with_bytes(&bytes, i);
                         i += read_bytes;
                         ResponseData::CName(dn)
                     },
@@ -362,12 +380,12 @@ impl From<Vec<u8>> for DNSMessage {
 
         }
 
-        Self {
+        Ok(Self {
             header,
             question,
             answers,
             authorities,
             additional
-        }
+        })
     }
 }

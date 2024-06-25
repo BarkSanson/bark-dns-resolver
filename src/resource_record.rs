@@ -1,10 +1,11 @@
 use std::net::Ipv4Addr;
 use crate::domain_name::DomainName;
+use crate::serialize::{Deserialize, EncodingError, Serialize};
 
 #[derive(Copy, Clone)]
 pub enum Class {
     Internet = 1,
-    Chaos = 3 // ??
+    Chaos = 3
 }
 
 impl From<u16> for Class {
@@ -83,5 +84,13 @@ impl ResourceRecord {
             rdlength,
             rdata
         }
+    }
+}
+
+impl Deserialize for ResourceRecord {
+    type Error = EncodingError;
+
+    fn deserialize(bytes: &[u8]) -> Result<Self, Self::Error> {
+        todo!()
     }
 }
