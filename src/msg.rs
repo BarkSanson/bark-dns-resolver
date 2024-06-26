@@ -3,11 +3,16 @@
 // is probably not the best option. However, this implementation will work for now.
 // - Limit label length to 63 octets
 
-use std::net::Ipv4Addr;
-
 use crate::domain_name::DomainName;
-use crate::resource_record::{Class, ResourceRecordHeader, ResponseData, Type};
-use crate::serialize::{Deserialize, EncodingError, Serialize};
+use crate::resource_record::{AResourceRecord, Class, ResourceRecord, ResourceRecordHeader, Type};
+use crate::serialize::{Deserialize, EncodingError, read_u16, Serialize};
+
+const MESSAGE_HEADER_LENGTH: usize = 12;
+const AA_FLAG_SHIFT: usize = 2;
+const TC_FLAG_SHIFT: usize = 1;
+const RA_FLAG_SHIFT: usize = 7;
+const QR_FLAG_SHIFT: usize = 7;
+const OPCODE_SHIFT: usize = 3;
 
 pub enum MessageError {
     InvalidOpcode,
@@ -77,7 +82,7 @@ impl TryFrom<u8> for MessageType {
     }
 }
 
-pub struct Header {
+pub struct MessageHeader {
     id: u16,
     qr: MessageType,
     opcode: Opcode,
@@ -92,7 +97,7 @@ pub struct Header {
     arcount: u16
 }
 
-impl Header {
+impl MessageHeader {
     fn standard_query_from_id(id: u16) -> Self {
         Self {
             id,
@@ -111,7 +116,7 @@ impl Header {
     }
 }
 
-impl Serialize for Header {
+impl Serialize for MessageHeader {
     type Error = EncodingError;
 
     fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
@@ -128,8 +133,9 @@ impl Serialize for Header {
         let ra: u8 = if self.recursion_available { 1 } else { 0 };
         let rcode = self.response_code as u8;
 
-        let upper_flags = qr << 7 | opcode << 3 | aa << 2 | tc << 1 | rd;
-        let lower_flags = ra << 7 | 0 << 6 | 0 << 5 | 0 << 4 | rcode;
+        let upper_flags =
+            qr << QR_FLAG_SHIFT | opcode << OPCODE_SHIFT | aa << AA_FLAG_SHIFT | tc << TC_FLAG_SHIFT | rd;
+        let lower_flags = ra << RA_FLAG_SHIFT | 0 << 6 | 0 << 5 | 0 << 4 | rcode;
         bytes.extend_from_slice(&[upper_flags, lower_flags]);
 
         let counts = [self.qdcount, self.ancount, self.nscount, self.arcount];
@@ -143,25 +149,49 @@ impl Serialize for Header {
     }
 }
 
-impl TryFrom<&[u8]> for Header {
-    type Error = MessageError;
+impl Deserialize for MessageHeader {
+    type Error = EncodingError;
 
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let id = u16::from_be_bytes([value[0], value[1]]);
-        let flags = value[2];
-        let qr = MessageType::try_from((flags & 0b10000000) >> 7)?;
-        let opcode = Opcode::try_from((flags & 0b01111000) >> 3)?;
-        let aa = (flags & 0b00000100) >> 2;
-        let tc = (flags & 0b00000010) >> 1;
+    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), Self::Error>
+    where
+        Self: Sized
+    {
+        if offset + MESSAGE_HEADER_LENGTH > bytes.len() {
+            return Err(EncodingError::BufferOverflow);
+        }
+
+        let mut read_bytes = 0usize;
+        let (id, off) = read_u16(bytes, offset)?;
+        read_bytes += off;
+
+        let flags = bytes[offset + read_bytes];
+        read_bytes += 1;
+
+        let qr = MessageType::try_from((flags & 0b10000000) >> QR_FLAG_SHIFT)?;
+        let opcode = Opcode::try_from((flags & 0b01111000) >> OPCODE_SHIFT)?;
+        let aa = (flags & 0b00000100) >> AA_FLAG_SHIFT;
+        let tc = (flags & 0b00000010) >> TC_FLAG_SHIFT;
         let rd = flags & 0b00000001;
-        let ra = (value[3] & 0b10000000) >> 7;
-        let response_code = ResponseCode::try_from(value[3] & 0b00001111)?;
-        let qdcount = u16::from_be_bytes([value[4], value[5]]);
-        let ancount = u16::from_be_bytes([value[6], value[7]]);
-        let nscount = u16::from_be_bytes([value[8], value[9]]);
-        let arcount = u16::from_be_bytes([value[10], value[11]]);
 
-        Ok(Self {
+        let flags = bytes[offset + read_bytes];
+        read_bytes += 1;
+
+        let ra = (flags & 0b10000000) >> RA_FLAG_SHIFT;
+        let response_code = ResponseCode::try_from(flags & 0b00001111)?;
+
+        let (qdcount, off) = read_u16(bytes, offset + read_bytes)?;
+        read_bytes += off;
+
+        let (ancount, off) = read_u16(bytes, offset + read_bytes)?;
+        read_bytes += off;
+
+        let (nscount, off) = read_u16(bytes, offset + read_bytes)?;
+        read_bytes += off;
+
+        let (arcount, off) = read_u16(bytes, offset + read_bytes)?;
+        read_bytes += off;
+
+        Ok((read_bytes, Self {
             id,
             qr,
             opcode,
@@ -174,7 +204,7 @@ impl TryFrom<&[u8]> for Header {
             ancount,
             nscount,
             arcount
-        })
+        }))
     }
 }
 
@@ -221,21 +251,48 @@ impl Serialize for Question {
     }
 }
 
+impl Deserialize for Question {
+    type Error = EncodingError;
+
+    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), Self::Error>
+    where
+        Self: Sized
+    {
+        let mut read_bytes = 0usize;
+        let (off, qname) = DomainName::deserialize(&bytes, offset)?;
+        read_bytes += off;
+
+        let (qtype, off) = read_u16(bytes, off)?;
+        let qtype = Type::try_from(qtype)?;
+        read_bytes += off;
+
+        let (qclass, off) = read_u16(bytes, off)?;
+        let qclass = Class::try_from(qclass)?;
+        read_bytes += off;
+
+        Ok((read_bytes, Self {
+            qname,
+            qtype,
+            qclass
+        }))
+    }
+}
+
 pub struct DNSMessage {
-    header: Header,
+    header: MessageHeader,
     question: Question,
-    answers: Option<Vec<ResourceRecordHeader>>,
-    authorities: Option<Vec<ResourceRecordHeader>>,
-    additional: Option<Vec<ResourceRecordHeader>>
+    answers: Option<Vec<Box<dyn ResourceRecord>>>,
+    authorities: Option<Vec<Box<dyn ResourceRecord>>>,
+    additional: Option<Vec<Box<dyn ResourceRecord>>>
 }
 
 impl DNSMessage {
     pub(crate) fn new_from_components(
-        header: Header,
+        header: MessageHeader,
         question: Question,
-        answers: Option<Vec<ResourceRecordHeader>>,
-        authorities: Option<Vec<ResourceRecordHeader>>,
-        additional: Option<Vec<ResourceRecordHeader>>) -> Self {
+        answers: Option<Vec<Box<dyn ResourceRecord>>>,
+        authorities: Option<Vec<Box<dyn ResourceRecord>>>,
+        additional: Option<Vec<Box<dyn ResourceRecord>>>) -> Self {
         Self {
             header,
             question,
@@ -247,7 +304,7 @@ impl DNSMessage {
 
     pub(crate) fn new_query_from_hostname(hostname: DomainName) -> Self {
         let id = rand::random::<u16>();
-        let header = Header::standard_query_from_id(id);
+        let header = MessageHeader::standard_query_from_id(id);
         let question = Question::new_from_domain_name(hostname);
 
         Self {
@@ -276,95 +333,30 @@ impl Serialize for DNSMessage {
 impl Deserialize for DNSMessage {
     type Error = MessageError;
 
-    fn deserialize(bytes: &[u8]) -> Result<Self, Self::Error>{
-        let header = Header::try_from(&bytes[..12])?;
-        let mut i= 12usize;
+    fn deserialize(bytes: &[u8], offset: usize) -> Result<Self, Self::Error>{
+        let mut read_bytes = 0usize;
+        let (off, header) = MessageHeader::deserialize(bytes, offset)?;
 
-        let (qname_length, qname) = DomainName::from_with_bytes(&bytes, i);
-
-        i += qname_length;
-
-        let qtype = Type::from(u16::from_be_bytes([
-            bytes[i],
-            bytes[i + 1]]));
-        let qclass = Class::from(u16::from_be_bytes([
-            bytes[i + 2],
-            bytes[i + 3]]));
-
-        i += 4;
-
-        let question = Question::new(qname, qtype, qclass);
+        let (off, question) = Question::deserialize(bytes, offset + read_bytes)?;
+        read_bytes += off;
 
         let mut answers = None;
         if header.ancount != 0 {
             let mut answers_vec = Vec::new();
             for _ in 0..header.ancount {
-                let (read_bytes, name) = DomainName::from_with_bytes(bytes, i);
+                let (rr_header, off) =
+                    ResourceRecordHeader::deserialize(bytes, offset + read_bytes)?;
+                read_bytes += off;
 
-                i += read_bytes;
-
-                let rr_type = Type::from(u16::from_be_bytes([
-                    bytes[i],
-                    bytes[i + 1]]));
-
-                let rr_class = Class::from(u16::from_be_bytes([
-                    bytes[i + 2],
-                    bytes[i + 3]]));
-
-                i += 4;
-
-                let ttl = i32::from_be_bytes([
-                    bytes[i],
-                    bytes[i + 1],
-                    bytes[i + 2],
-                    bytes[i + 3],
-                ]);
-
-                i += 4;
-
-                let rdlength = u16::from_be_bytes([
-                    bytes[i],
-                    bytes[i + 1],
-                ]);
-
-                i += 2;
-
-                // RData depends on the values of class and type. However,
-                // since all transactions usually occur using the IN class - the
-                // Internet - and because I don't know what the Chaos class is (just yet),
-                // I'll just implement it this way (temporally (or not 😇))
-                let rdata = match rr_type {
+                let (off, rr) = match rr_header.rr_type() {
                     Type::A => {
-                        ResponseData::A(Ipv4Addr::from([
-                            bytes[i],
-                            bytes[i + 1],
-                            bytes[i + 2],
-                            bytes[i + 3],
-                        ]))
+                        AResourceRecord::deserialize(rr_header, bytes, offset)?
                     },
-                    Type::CName => {
-                        let (read_bytes, dn) = DomainName::from_with_bytes(&bytes, i);
-                        i += read_bytes;
-                        ResponseData::CName(dn)
-                    },
-                    _ => panic!("Type not supported")
-                    // Type::NameServer => {}
-                    // Type::SOA => {}
-                    // Type::WKS => {}
-                    // Type::PTR => {}
-                    // Type::MailExchange => {}
+                    _ => todo!()
                 };
+                read_bytes += off;
 
-                let rr = ResourceRecordHeader::new(
-                    name,
-                    rr_type,
-                    rr_class,
-                    ttl,
-                    rdlength,
-                    rdata
-                );
-
-                answers_vec.push(rr);
+                answers_vec.push(Box::new(rr));
             }
 
             answers = Some(answers_vec);

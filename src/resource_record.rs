@@ -1,3 +1,4 @@
+use std::io::{Bytes, Read};
 use std::net::Ipv4Addr;
 use std::ptr::read;
 use crate::domain_name::DomainName;
@@ -85,6 +86,10 @@ impl ResourceRecordHeader {
             rdlength,
         }
     }
+
+    pub(crate) fn rr_type(&self) -> Type {
+        self.rr_type
+    }
 }
 
 impl Serialize for ResourceRecordHeader {
@@ -98,8 +103,8 @@ impl Serialize for ResourceRecordHeader {
 impl Deserialize for ResourceRecordHeader {
     type Error = EncodingError;
 
-    fn deserialize(bytes: &[u8], offset: usize) -> Result<(Self, usize), Self::Error> {
-        let (name, mut read_bytes) = DomainName::deserialize(bytes, offset)?;
+    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), Self::Error> {
+        let (mut read_bytes, name) = DomainName::deserialize(bytes, offset)?;
 
         let (rr_type_u16, new_read_bytes) = read_u16(bytes, offset + read_bytes)?;
         let rr_type = Type::try_from(rr_type_u16)?;
@@ -125,7 +130,20 @@ impl Deserialize for ResourceRecordHeader {
     }
 }
 
-trait ResourceRecord: Serialize + Deserialize {}
+// I decided to make a separate deserialize and serialize for ResourceRecord
+// instead of making ResourceRecord implement the Serialize + Deserialize
+// traits because I couldn't come up with better solutions for these problems:
+// - I don't want to read the header twice. If I implemented Serialize + Deserialize I would have
+// to read the header twice because first I would need to know which type of record I'm working
+// with and, second, inside de deserialize function of that specific RR, I would need to read
+// once again the header.
+// - I don't want to specify the associated type error each time I want to use a Box<dyn ResourceRecord>
+// I know this might not be the best solution since these traits may be a bit confusing, but I think
+// this is the best way to keep advancing with the project and don't get stuck with this specific part
+pub(crate) trait ResourceRecord {
+    fn deserialize(header: ResourceRecordHeader, bytes: &[u8], offset: usize) where Self: Sized;
+    fn serialize(bytes: &[u8], offset: usize) where Self: Sized;
+}
 
 pub(crate) struct AResourceRecord {
     header: ResourceRecordHeader,
@@ -141,33 +159,18 @@ impl AResourceRecord {
     }
 }
 
-impl Serialize for AResourceRecord {
-    type Error = EncodingError;
+impl ResourceRecord for AResourceRecord {
+    fn deserialize(header: ResourceRecordHeader, bytes: &[u8], offset: usize)
+        -> Result<(usize, Self), EncodingError> {
+        let (ip, off) = read_ipv4(bytes, offset)?;
 
-    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
-        let mut bytes = Vec::from(self.header.serialize()?);
-        bytes.extend_from_slice(&self.data.octets());
+        Ok((offset + off, Self { header, data: ip }))
+    }
 
-        Ok(bytes)
+    fn serialize(bytes: &[u8], offset: usize) {
+        todo!()
     }
 }
 
-impl Deserialize for AResourceRecord {
-    type Error = EncodingError;
+pub(crate) struct ResourceRecordFactory;
 
-    fn deserialize(bytes: &[u8], offset: usize) -> Result<(Self, usize), Self::Error>
-    where
-        Self: Sized
-    {
-        let (header, mut read_bytes) = ResourceRecordHeader::deserialize(bytes, offset)?;
-        let (ipv4, new_read_bytes) = read_ipv4(bytes, offset + read_bytes)?;
-        read_bytes += new_read_bytes;
-
-        Ok((Self {
-            header,
-            data: ipv4
-        }, read_bytes))
-    }
-}
-
-impl ResourceRecord for AResourceRecord {}

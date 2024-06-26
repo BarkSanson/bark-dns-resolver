@@ -46,7 +46,7 @@ impl Serialize for DomainName {
 impl Deserialize for DomainName {
     type Error = EncodingError;
 
-    fn deserialize(bytes: &[u8], offset: usize) -> Result<(Self, usize), Self::Error>
+    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), Self::Error>
     where
         Self: Sized
     {
@@ -100,7 +100,7 @@ impl Deserialize for DomainName {
 
         let dn = DomainName::from_string(&labels);
 
-        (read_bytes, dn)
+        Ok((read_bytes, dn))
 
     }
 }
