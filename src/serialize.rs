@@ -1,48 +1,53 @@
 use std::net::Ipv4Addr;
 
-pub(crate) enum EncodingError {
-    BufferOverflow
+pub enum DeserializationError {
+    BufferOverflow,
+    InvalidData(String),
+    Io(std::io::Error)
 }
 
-pub trait Serialize {
-    type Error;
-
-    fn serialize(&self) -> Result<Vec<u8>, Self::Error>;
+pub(crate) trait Serialize {
+    fn serialize(&self) -> Vec<u8>;
 }
 
-pub trait Deserialize {
-    type Error;
+pub(crate) trait Deserialize {
     fn deserialize(bytes: &[u8], offset: usize)
-        -> Result<(usize, Self), Self::Error> where Self: Sized;
+        -> Result<(usize, Self), DeserializationError> where Self: Sized;
 }
 
-pub(crate) fn read_ipv4(bytes: &[u8], offset: usize) -> Result<(Ipv4Addr, usize), EncodingError> {
+pub(crate) fn read_ipv4(bytes: &[u8], offset: usize)
+    -> Result<(usize, Ipv4Addr), DeserializationError> {
     if offset + 3 > bytes.len() {
-        return Err(EncodingError::BufferOverflow)
+        return Err(DeserializationError::BufferOverflow)
     }
 
-    Ok((Ipv4Addr::from(bytes[offset..offset + 4]), offset + 4))
+    let bytes: [u8; 4] =
+        bytes[offset..offset + 4].try_into().expect("Couldn't convert bytes into Ipv4");
+
+    Ok((4, Ipv4Addr::from(bytes)))
 }
 
-pub(crate) fn read_u16(bytes: &[u8], offset: usize) -> Result<(u16, usize), EncodingError> {
+pub(crate) fn read_u16(bytes: &[u8], offset: usize)
+    -> Result<(usize, u16), DeserializationError> {
     if offset + 1 > bytes.len() {
-        return Err(EncodingError::BufferOverflow)
+        return Err(DeserializationError::BufferOverflow)
     }
 
-    Ok((u16::from_be_bytes([
+    Ok((2, u16::from_be_bytes([
         bytes[offset],
-        bytes[offset + 1]]), offset + 2))
+        bytes[offset + 1]])))
 }
 
-pub(crate) fn read_i32(bytes: &[u8], offset: usize) -> Result<(i32, usize), EncodingError> {
+pub(crate) fn read_i32(bytes: &[u8], offset: usize)
+    -> Result<(usize, i32), DeserializationError> {
     if offset + 3 > bytes.len() {
-        return Err(EncodingError::BufferOverflow)
+        return Err(DeserializationError::BufferOverflow)
     }
 
-    Ok((i32::from_be_bytes([
+    Ok((4, i32::from_be_bytes([
         bytes[offset],
         bytes[offset + 1],
         bytes[offset + 2],
         bytes[offset + 3],
-    ]), offset + 4))
+    ])))
 }

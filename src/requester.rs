@@ -4,13 +4,13 @@ use std::str::FromStr;
 
 use crate::domain_name::DomainName;
 use crate::msg::{DNSMessage, MessageError};
-use crate::serialize::{Deserialize, EncodingError, Serialize};
+use crate::serialize::{Deserialize, DeserializationError, Serialize};
 
 const DEFAULT_NAME_SERVER: &str = "8.8.8.8";
 
-enum DNSError {
+pub enum DNSError {
     Io(io::Error),
-    Encoding(EncodingError),
+    Encoding(DeserializationError),
     Message(MessageError)
 }
 
@@ -20,8 +20,8 @@ impl From<io::Error> for DNSError {
     }
 }
 
-impl From<EncodingError> for DNSError {
-    fn from(value: EncodingError) -> Self {
+impl From<DeserializationError> for DNSError {
+    fn from(value: DeserializationError) -> Self {
         Self::Encoding(value)
     }
 }
@@ -46,13 +46,15 @@ impl Requester {
 
         // 3. Generate standard query, serialize it and send it through the UDP socket
         let query = DNSMessage::new_query_from_hostname(DomainName::from_string(name));
-        let b = query.serialize()?;
+        let b = query.serialize();
         let _ = udp_socket.send(b.as_slice());
 
         // 5. Prepare buffer for response, deserialize message and get the result
         let buf = &mut [0u8; 512];
         let (_, _src) = udp_socket.recv_from(buf).expect("Didn't receive data");
 
-        let msg = DNSMessage::deserialize(buf)?;
+        let msg = DNSMessage::deserialize(buf, 0)?;
+
+        Ok(vec![])
     }
 }

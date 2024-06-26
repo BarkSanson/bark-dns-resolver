@@ -3,9 +3,10 @@
 // is probably not the best option. However, this implementation will work for now.
 // - Limit label length to 63 octets
 
+use std::ptr::read;
 use crate::domain_name::DomainName;
 use crate::resource_record::{AResourceRecord, Class, ResourceRecord, ResourceRecordHeader, Type};
-use crate::serialize::{Deserialize, EncodingError, read_u16, Serialize};
+use crate::serialize::{Deserialize, DeserializationError, read_u16, Serialize};
 
 const MESSAGE_HEADER_LENGTH: usize = 12;
 const AA_FLAG_SHIFT: usize = 2;
@@ -82,7 +83,7 @@ impl TryFrom<u8> for MessageType {
     }
 }
 
-pub struct MessageHeader {
+pub(crate) struct MessageHeader {
     id: u16,
     qr: MessageType,
     opcode: Opcode,
@@ -117,9 +118,7 @@ impl MessageHeader {
 }
 
 impl Serialize for MessageHeader {
-    type Error = EncodingError;
-
-    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
+    fn serialize(&self) -> Vec<u8> {
         let mut bytes = vec![];
 
         let id_bytes = self.id.to_be_bytes();
@@ -145,30 +144,34 @@ impl Serialize for MessageHeader {
             bytes.extend_from_slice(&count_bytes);
         }
 
-        Ok(bytes)
+        bytes
     }
 }
 
 impl Deserialize for MessageHeader {
-    type Error = EncodingError;
-
-    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), Self::Error>
+    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), DeserializationError>
     where
         Self: Sized
     {
         if offset + MESSAGE_HEADER_LENGTH > bytes.len() {
-            return Err(EncodingError::BufferOverflow);
+            return Err(DeserializationError::BufferOverflow);
         }
 
         let mut read_bytes = 0usize;
-        let (id, off) = read_u16(bytes, offset)?;
+        let (off, id) = read_u16(bytes, offset)?;
         read_bytes += off;
 
         let flags = bytes[offset + read_bytes];
         read_bytes += 1;
 
-        let qr = MessageType::try_from((flags & 0b10000000) >> QR_FLAG_SHIFT)?;
-        let opcode = Opcode::try_from((flags & 0b01111000) >> OPCODE_SHIFT)?;
+        let qr = match MessageType::try_from((flags & 0b10000000) >> QR_FLAG_SHIFT) {
+            Ok(qr) => qr,
+            Err(_) => return Err(DeserializationError::InvalidData(format!("Invalid QR, {:?}", (flags & 0b10000000) >> QR_FLAG_SHIFT)))
+        };
+        let opcode = match Opcode::try_from((flags & 0b01111000) >> OPCODE_SHIFT) {
+            Ok(opcode) => opcode,
+            Err(_) => return Err(DeserializationError::InvalidData(format!("Invalid Opcode, {:?}", (flags & 0b10000000) >> QR_FLAG_SHIFT)))
+        };
         let aa = (flags & 0b00000100) >> AA_FLAG_SHIFT;
         let tc = (flags & 0b00000010) >> TC_FLAG_SHIFT;
         let rd = flags & 0b00000001;
@@ -177,18 +180,21 @@ impl Deserialize for MessageHeader {
         read_bytes += 1;
 
         let ra = (flags & 0b10000000) >> RA_FLAG_SHIFT;
-        let response_code = ResponseCode::try_from(flags & 0b00001111)?;
+        let response_code = match ResponseCode::try_from(flags & 0b00001111) {
+            Ok(rc) => rc,
+            Err(_) => return Err(DeserializationError::InvalidData(format!("Invalid Response Code, {:?}", (flags & 0b10000000) >> QR_FLAG_SHIFT)))
+        };
 
-        let (qdcount, off) = read_u16(bytes, offset + read_bytes)?;
+        let (off, qdcount) = read_u16(bytes, offset + read_bytes)?;
         read_bytes += off;
 
-        let (ancount, off) = read_u16(bytes, offset + read_bytes)?;
+        let (off, ancount) = read_u16(bytes, offset + read_bytes)?;
         read_bytes += off;
 
-        let (nscount, off) = read_u16(bytes, offset + read_bytes)?;
+        let (off, nscount) = read_u16(bytes, offset + read_bytes)?;
         read_bytes += off;
 
-        let (arcount, off) = read_u16(bytes, offset + read_bytes)?;
+        let (off, arcount) = read_u16(bytes, offset + read_bytes)?;
         read_bytes += off;
 
         Ok((read_bytes, Self {
@@ -208,7 +214,7 @@ impl Deserialize for MessageHeader {
     }
 }
 
-pub struct Question {
+pub(crate) struct Question {
     qname: DomainName,
     qtype: Type,
     qclass: Class
@@ -233,12 +239,10 @@ impl Question {
 }
 
 impl Serialize for Question {
-    type Error = EncodingError;
-
-    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
+    fn serialize(&self) -> Vec<u8> {
         let mut bytes = vec![];
 
-        let hostname_bytes = self.qname.serialize()?;
+        let hostname_bytes = self.qname.serialize();
         bytes.extend_from_slice(&hostname_bytes);
 
         let qtype_bytes = self.qtype as u16;
@@ -247,14 +251,13 @@ impl Serialize for Question {
         let qclass_bytes = self.qclass as u16;
         bytes.extend_from_slice(&qclass_bytes.to_be_bytes());
 
-        Ok(bytes)
+        bytes
     }
 }
 
 impl Deserialize for Question {
-    type Error = EncodingError;
-
-    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), Self::Error>
+    fn deserialize(bytes: &[u8], offset: usize)
+        -> Result<(usize, Self), DeserializationError>
     where
         Self: Sized
     {
@@ -262,12 +265,18 @@ impl Deserialize for Question {
         let (off, qname) = DomainName::deserialize(&bytes, offset)?;
         read_bytes += off;
 
-        let (qtype, off) = read_u16(bytes, off)?;
-        let qtype = Type::try_from(qtype)?;
+        let (off, qtype) = read_u16(bytes, offset + read_bytes)?;
+        let qtype = match Type::try_from(qtype) {
+            Ok(qtype) => qtype,
+            Err(_) => return Err(DeserializationError::InvalidData(format!("Invalid QType, {:?}", qtype)))
+        };
         read_bytes += off;
 
-        let (qclass, off) = read_u16(bytes, off)?;
-        let qclass = Class::try_from(qclass)?;
+        let (off, qclass) = read_u16(bytes, offset + read_bytes)?;
+        let qclass = match Class::try_from(qclass) {
+            Ok(qtype) => qtype,
+            Err(_) => return Err(DeserializationError::InvalidData(format!("Invalid QClass, {:?}", qclass)))
+        };
         read_bytes += off;
 
         Ok((read_bytes, Self {
@@ -278,7 +287,7 @@ impl Deserialize for Question {
     }
 }
 
-pub struct DNSMessage {
+pub(crate) struct DNSMessage {
     header: MessageHeader,
     question: Question,
     answers: Option<Vec<Box<dyn ResourceRecord>>>,
@@ -318,33 +327,30 @@ impl DNSMessage {
 }
 
 impl Serialize for DNSMessage {
-    type Error = EncodingError;
-
-    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
+    fn serialize(&self) -> Vec<u8> {
         let unflattened_bytes = vec![
-            self.header.serialize()?,
-            self.question.serialize()?
+            self.header.serialize(),
+            self.question.serialize()
         ];
 
-        Ok(unflattened_bytes.concat())
+        unflattened_bytes.concat()
     }
 }
 
 impl Deserialize for DNSMessage {
-    type Error = MessageError;
-
-    fn deserialize(bytes: &[u8], offset: usize) -> Result<Self, Self::Error>{
+    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), DeserializationError>{
         let mut read_bytes = 0usize;
         let (off, header) = MessageHeader::deserialize(bytes, offset)?;
+        read_bytes += off;
 
         let (off, question) = Question::deserialize(bytes, offset + read_bytes)?;
         read_bytes += off;
 
         let mut answers = None;
         if header.ancount != 0 {
-            let mut answers_vec = Vec::new();
+            let mut answers_vec: Vec<Box<dyn ResourceRecord>> = Vec::new();
             for _ in 0..header.ancount {
-                let (rr_header, off) =
+                let (off, rr_header) =
                     ResourceRecordHeader::deserialize(bytes, offset + read_bytes)?;
                 read_bytes += off;
 
@@ -372,12 +378,12 @@ impl Deserialize for DNSMessage {
 
         }
 
-        Ok(Self {
+        Ok((read_bytes, Self {
             header,
             question,
             answers,
             authorities,
             additional
-        })
+        }))
     }
 }

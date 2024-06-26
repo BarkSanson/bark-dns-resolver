@@ -1,11 +1,11 @@
-use std::io::{Bytes, Read};
 use std::net::Ipv4Addr;
-use std::ptr::read;
+
 use crate::domain_name::DomainName;
-use crate::serialize::{Deserialize, EncodingError, read_i32, read_ipv4, read_u16, Serialize};
+use crate::msg::MessageError;
+use crate::serialize::{Deserialize, DeserializationError, read_i32, read_ipv4, read_u16, Serialize};
 
 #[derive(Copy, Clone)]
-pub enum Class {
+pub(crate) enum Class {
     Internet = 1,
     Chaos = 3
 }
@@ -21,7 +21,7 @@ impl From<u16> for Class {
 }
 
 #[derive(Copy, Clone)]
-pub enum Type {
+pub(crate) enum Type {
     A = 1,
     NameServer = 2,
     CName = 5,
@@ -32,7 +32,7 @@ pub enum Type {
 }
 
 impl TryFrom<u16> for Type {
-    type Error = EncodingError;
+    type Error = MessageError;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
@@ -43,7 +43,7 @@ impl TryFrom<u16> for Type {
             11 => Ok(Type::WKS),
             12 => Ok(Type::PTR),
             15 => Ok(Type::MailExchange),
-            _ => Err()
+            _ => Err(MessageError::InvalidMessageType)
         }
     }
 }
@@ -93,40 +93,42 @@ impl ResourceRecordHeader {
 }
 
 impl Serialize for ResourceRecordHeader {
-    type Error = EncodingError;
-
-    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
+    fn serialize(&self) -> Vec<u8> {
         todo!()
     }
 }
 
 impl Deserialize for ResourceRecordHeader {
-    type Error = EncodingError;
-
-    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), Self::Error> {
+    fn deserialize(bytes: &[u8], offset: usize) -> Result<(usize, Self), DeserializationError> {
         let (mut read_bytes, name) = DomainName::deserialize(bytes, offset)?;
 
-        let (rr_type_u16, new_read_bytes) = read_u16(bytes, offset + read_bytes)?;
-        let rr_type = Type::try_from(rr_type_u16)?;
-        read_bytes += new_read_bytes;
+        let (off, rr_type) = read_u16(bytes, offset + read_bytes)?;
+        let rr_type = match Type::try_from(rr_type) {
+            Ok(rr_type) => rr_type,
+            Err(_) => return Err(DeserializationError::InvalidData(format!("Invalid RR Type, {:?}", rr_type)))
+        };
+        read_bytes += off;
 
-        let (rr_class_u16, new_read_bytes) = read_u16(bytes, offset + read_bytes)?;
-        let rr_class= Class::try_from(rr_class_u16)?;
-        read_bytes += new_read_bytes;
+        let (off, rr_class) = read_u16(bytes, offset + read_bytes)?;
+        let rr_class = match Class::try_from(rr_class) {
+            Ok(rr_class) => rr_class,
+            Err(_) => return Err(DeserializationError::InvalidData(format!("Invalid RR Type, {:?}", rr_class)))
+        };
+        read_bytes += off;
 
-        let (ttl, new_read_bytes) = read_i32(bytes, offset + read_bytes)?;
-        read_bytes += new_read_bytes;
+        let (off, ttl) = read_i32(bytes, offset + read_bytes)?;
+        read_bytes += off;
 
-        let (rdlength, new_read_bytes) = read_u16(bytes, offset + read_bytes)?;
-        read_bytes = new_read_bytes;
+        let (off, rdlength) = read_u16(bytes, offset + read_bytes)?;
+        read_bytes = off;
 
-        Ok((Self {
+        Ok((read_bytes, Self {
             name,
             rr_type,
             rr_class,
             ttl,
             rdlength
-        }, read_bytes))
+        }))
     }
 }
 
@@ -141,8 +143,9 @@ impl Deserialize for ResourceRecordHeader {
 // I know this might not be the best solution since these traits may be a bit confusing, but I think
 // this is the best way to keep advancing with the project and don't get stuck with this specific part
 pub(crate) trait ResourceRecord {
-    fn deserialize(header: ResourceRecordHeader, bytes: &[u8], offset: usize) where Self: Sized;
-    fn serialize(bytes: &[u8], offset: usize) where Self: Sized;
+    fn deserialize(header: ResourceRecordHeader, bytes: &[u8], offset: usize)
+        -> Result<(usize, Self), DeserializationError> where Self: Sized;
+    fn serialize() -> Vec<u8> where Self: Sized;
 }
 
 pub(crate) struct AResourceRecord {
@@ -161,16 +164,14 @@ impl AResourceRecord {
 
 impl ResourceRecord for AResourceRecord {
     fn deserialize(header: ResourceRecordHeader, bytes: &[u8], offset: usize)
-        -> Result<(usize, Self), EncodingError> {
-        let (ip, off) = read_ipv4(bytes, offset)?;
+        -> Result<(usize, Self), DeserializationError> {
+        let (off, ip) = read_ipv4(bytes, offset)?;
 
         Ok((offset + off, Self { header, data: ip }))
     }
 
-    fn serialize(bytes: &[u8], offset: usize) {
+    fn serialize() -> Vec<u8> {
         todo!()
     }
 }
-
-pub(crate) struct ResourceRecordFactory;
 
