@@ -1,3 +1,4 @@
+use std::io::Bytes;
 use std::net::Ipv4Addr;
 
 use crate::domain_name::DomainName;
@@ -120,7 +121,7 @@ impl Deserialize for ResourceRecordHeader {
         read_bytes += off;
 
         let (off, rdlength) = read_u16(bytes, offset + read_bytes)?;
-        read_bytes = off;
+        read_bytes += off;
 
         Ok((read_bytes, Self {
             name,
@@ -150,14 +151,14 @@ pub(crate) trait ResourceRecord {
 
 pub(crate) struct AResourceRecord {
     header: ResourceRecordHeader,
-    data: Ipv4Addr
+    ip: Ipv4Addr
 }
 
 impl AResourceRecord {
-    fn new(header: ResourceRecordHeader, data: Ipv4Addr) -> Self {
+    fn new(header: ResourceRecordHeader, ip: Ipv4Addr) -> Self {
         Self {
             header,
-            data
+            ip
         }
     }
 }
@@ -167,7 +168,7 @@ impl ResourceRecord for AResourceRecord {
         -> Result<(usize, Self), DeserializationError> {
         let (off, ip) = read_ipv4(bytes, offset)?;
 
-        Ok((offset + off, Self { header, data: ip }))
+        Ok((offset + off, Self { header, ip }))
     }
 
     fn serialize() -> Vec<u8> {
@@ -175,3 +176,48 @@ impl ResourceRecord for AResourceRecord {
     }
 }
 
+pub(crate) struct CNameResourceRecord {
+    header: ResourceRecordHeader,
+    cname: DomainName
+}
+
+impl ResourceRecord for CNameResourceRecord {
+    fn deserialize(header: ResourceRecordHeader, bytes: &[u8], offset: usize)
+        -> Result<(usize, Self), DeserializationError>
+    where
+        Self: Sized
+    {
+        let (off, cname) = DomainName::deserialize(bytes, offset)?;
+
+        Ok((off, Self {
+            header,
+            cname
+        }))
+    }
+
+    fn serialize() -> Vec<u8>
+    where
+        Self: Sized
+    {
+        todo!()
+    }
+}
+
+pub(crate) struct ResourceRecordFactory;
+
+impl ResourceRecordFactory {
+    pub(crate) fn get_rr(header: ResourceRecordHeader, bytes: &[u8], offset: usize)
+        -> Result<(usize, Box<dyn ResourceRecord>), DeserializationError> {
+        match header.rr_type() {
+            Type::A => {
+                let (off, rr) = AResourceRecord::deserialize(header, bytes, offset)?;
+                Ok((off, Box::new(rr)))
+            },
+            Type::CName => {
+                let (off, rr) = CNameResourceRecord::deserialize(header, bytes, offset)?;
+                Ok((off, Box::new(rr)))
+            },
+            _ => todo!()
+        }
+    }
+}

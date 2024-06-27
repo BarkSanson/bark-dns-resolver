@@ -5,7 +5,7 @@
 
 use std::ptr::read;
 use crate::domain_name::DomainName;
-use crate::resource_record::{AResourceRecord, Class, ResourceRecord, ResourceRecordHeader, Type};
+use crate::resource_record::{AResourceRecord, Class, CNameResourceRecord, ResourceRecord, ResourceRecordFactory, ResourceRecordHeader, Type};
 use crate::serialize::{Deserialize, DeserializationError, read_u16, Serialize};
 
 const MESSAGE_HEADER_LENGTH: usize = 12;
@@ -354,15 +354,11 @@ impl Deserialize for DNSMessage {
                     ResourceRecordHeader::deserialize(bytes, offset + read_bytes)?;
                 read_bytes += off;
 
-                let (off, rr) = match rr_header.rr_type() {
-                    Type::A => {
-                        AResourceRecord::deserialize(rr_header, bytes, offset)?
-                    },
-                    _ => todo!()
-                };
+                let (off, rr) =
+                    ResourceRecordFactory::get_rr(rr_header, bytes, offset + read_bytes)?;
                 read_bytes += off;
 
-                answers_vec.push(Box::new(rr));
+                answers_vec.push(rr);
             }
 
             answers = Some(answers_vec);
